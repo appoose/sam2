@@ -177,6 +177,8 @@ def load_video_frames(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    start_frame=None,
+    end_frame=None,
 ):
     """
     Load the video frames from video_path. The frames are resized to image_size as in
@@ -193,8 +195,12 @@ def load_video_frames(
             img_mean=img_mean,
             img_std=img_std,
             compute_device=compute_device,
+            start_frame=start_frame,
+            end_frame=end_frame,
         )
     elif is_str and os.path.isdir(video_path):
+        if start_frame is not None or end_frame is not None:
+            raise NotImplementedError("start_frame and end_frame are not supported for JPEG folder")
         return load_video_frames_from_jpg_images(
             video_path=video_path,
             image_size=image_size,
@@ -277,12 +283,17 @@ def load_video_frames_from_jpg_images(
     return images, video_height, video_width
 
 
+
+
+
 def load_video_frames_from_video_file(
     video_path,
     image_size,
     offload_video_to_cpu,
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
+    start_frame=None,
+    end_frame=None,
     compute_device=torch.device("cuda"),
 ):
     """Load the video frames from a video file."""
@@ -292,13 +303,33 @@ def load_video_frames_from_video_file(
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
     # Get the original video height and width
     decord.bridge.set_bridge("torch")
-    video_height, video_width, _ = decord.VideoReader(video_path).next().shape
-    # Iterate over all frames in the video
+    vr = decord.VideoReader(video_path,width=image_size,height=image_size)
+    video_height, video_width, _ = vr.next().shape
+    # video_height, video_width, _ = decord.VideoReader(video_path).next().shape
+        
+    total_frames = len(vr)
+    start_idx = 0 if start_frame is None else max(0, min(start_frame, total_frames - 1))
+    end_idx = total_frames if end_frame is None else min(end_frame, total_frames)
+    frame_indices = list(range(start_idx, end_idx))
+    frames = vr.get_batch(frame_indices).float()
+    
+    
+    # Iterate over specified frames in the video
     images = []
-    for frame in decord.VideoReader(video_path, width=image_size, height=image_size):
-        images.append(frame.permute(2, 0, 1))
-
+    for frame_idx in range(start_idx, end_idx):
+        frame = vr[frame_idx]
+        # if frame.shape[0] != image_size or frame.shape[1] != image_size:
+        #     frame = torch.nn.functional.interpolate(
+        #         frame.unsqueeze(0).permute(0, 3, 1, 2),
+        #         size=(image_size, image_size),
+        #         mode='bilinear',
+        #         align_corners=False
+        #     ).squeeze(0)
+        # else:
+        frame = frame.permute(2, 0, 1)  # HWC -> CHW
+        images.append(frame)
     images = torch.stack(images, dim=0).float() / 255.0
+    
     if not offload_video_to_cpu:
         images = images.to(compute_device)
         img_mean = img_mean.to(compute_device)
